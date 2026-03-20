@@ -824,7 +824,7 @@ class GPT(nn.Module):
             if isinstance(module, nn.Linear) and getattr(module, "_zero_init", False):
                 nn.init.zeros_(module.weight)
 
-    def forward(self, input_ids: Tensor, target_ids: Tensor, score_offset: int = 0) -> Tensor:
+    def forward(self, input_ids: Tensor, target_ids: Tensor, score_offset: int = 0, lora=None) -> Tensor:
         x = self.tok_emb(input_ids)
         x = F.rms_norm(x, (x.size(-1),))
         x0 = x
@@ -835,18 +835,25 @@ class GPT(nn.Module):
             for _ in range(self.recurrence):
                 for block in self.blocks:
                     x = x + self.depth_emb[step]
-                    x = block(x, x0)
+                    qd = lora.q_loras[step] if lora else None
+                    vd = lora.v_loras[step] if lora else None
+                    x = block(x, x0, qd, vd)
                     step += 1
         else:
             # Original U-Net skip connections.
             skips: list[Tensor] = []
             for i in range(self.num_encoder_layers):
-                x = self.blocks[i](x, x0)
+                qd = lora.q_loras[i] if lora else None
+                vd = lora.v_loras[i] if lora else None
+                x = self.blocks[i](x, x0, qd, vd)
                 skips.append(x)
             for i in range(self.num_decoder_layers):
+                bi = self.num_encoder_layers + i
                 if skips:
                     x = x + self.skip_weights[i].to(dtype=x.dtype)[None, None, :] * skips.pop()
-                x = self.blocks[self.num_encoder_layers + i](x, x0)
+                qd = lora.q_loras[bi] if lora else None
+                vd = lora.v_loras[bi] if lora else None
+                x = self.blocks[bi](x, x0, qd, vd)
 
         x = self.final_norm(x)
         if score_offset > 0:
